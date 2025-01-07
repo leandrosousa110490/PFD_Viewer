@@ -1,0 +1,5 @@
+PyQt5==5.15.9
+PyMuPDF==1.22.5
+PyPDF2==3.0.1
+python-docx==0.8.11
+openpyxl==3.1.2

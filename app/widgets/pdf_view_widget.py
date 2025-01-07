@@ -2,7 +2,7 @@ import fitz
 import os
 import shutil
 from PyQt5.QtWidgets import (QWidget, QLabel, QVBoxLayout, QScrollArea, 
-                            QMenu, QMessageBox, QTabWidget)
+                            QMenu, QMessageBox, QTabWidget, QInputDialog, QLineEdit)
 from PyQt5.QtGui import QPixmap, QImage
 from PyQt5.QtCore import Qt
 import tempfile
@@ -19,12 +19,46 @@ class PageWidget(QWidget):
         self.page_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.layout.addWidget(self.page_label)
         
-        # Enable context menu for both the widget and label
+        # Enable mouse tracking for manual edit
+        self.page_label.setMouseTracking(True)
+        self.page_label.mousePressEvent = self.on_mouse_press
+        
+        # Enable context menu
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
         self.page_label.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.page_label.customContextMenuRequested.connect(self.show_context_menu)
-        
+
+    def on_mouse_press(self, event):
+        if event.button() == Qt.LeftButton:
+            # Find PDFViewWidget parent
+            parent = self.parent()
+            while parent and not isinstance(parent, PDFViewWidget):
+                parent = parent.parent()
+                
+            if parent:
+                try:
+                    page_number = parent.page_widgets.index(self)
+                    # Convert click position to PDF coordinates
+                    pos = event.pos()
+                    scale = 1.0 / parent.zoom
+                    pdf_x = pos.x() * scale
+                    pdf_y = pos.y() * scale
+                    text, position = parent.start_manual_edit(page_number, (pdf_x, pdf_y))
+                    
+                    # Show edit dialog
+                    new_text, ok = QInputDialog.getText(
+                        self,
+                        "Edit Text",
+                        "Edit text at this position:",
+                        QLineEdit.Normal,
+                        text
+                    )
+                    if ok and new_text:
+                        parent.add_text(page_number, new_text, position)
+                except ValueError:
+                    pass
+
     def show_context_menu(self, position):
         menu = QMenu(self)
         close_page_action = menu.addAction("Close Page")
@@ -218,3 +252,106 @@ class PDFViewWidget(QWidget):
             index = parent.indexOf(self)
             if index >= 0:
                 parent.tabCloseRequested.emit(index)
+
+    def edit_text(self, page_number, old_text, new_text):
+        """Edit text content in the PDF"""
+        try:
+            page = self.doc[page_number]
+            # Search for text instances and replace them
+            text_instances = page.search_for(old_text)
+            if text_instances:
+                for inst in text_instances:
+                    # Get original position and font info
+                    text_info = page.get_text("dict", clip=inst)
+                    if "blocks" in text_info and text_info["blocks"]:
+                        block = text_info["blocks"][0]
+                        if "lines" in block and block["lines"]:
+                            line = block["lines"][0]
+                            if "spans" in line and line["spans"]:
+                                span = line["spans"][0]
+                                font_size = span["size"]
+                                font_name = span["font"]
+                                color = span.get("color", (0, 0, 0))
+                                
+                                # Calculate text position
+                                x0, y0, x1, y1 = inst
+                                text_width = x1 - x0
+                                text_height = y1 - y0
+                                
+                                # Remove old text
+                                page.add_redact_annot(inst)
+                                page.apply_redactions()
+                                
+                                # Insert new text with preserved formatting and position
+                                page.insert_text(
+                                    (x0, y0 + text_height * 0.8),  # Adjust Y position
+                                    new_text,
+                                    fontsize=font_size,
+                                    fontname=font_name,
+                                    color=color
+                                )
+                
+                self.doc.saveIncr()
+                self.show_page(page_number)
+                return True
+            return False
+        except Exception as e:
+            QMessageBox.warning(None, "Error Editing Text", 
+                              f"Could not edit text on page {page_number + 1}:\n{str(e)}")
+            return False
+
+    def start_manual_edit(self, page_number, position):
+        """Start manual text editing at clicked position"""
+        try:
+            page = self.doc[page_number]
+            # Get text near clicked position
+            text_info = page.get_text("dict", clip=(position[0]-50, position[1]-20, position[0]+50, position[1]+20))
+            if "blocks" in text_info and text_info["blocks"]:
+                return text_info["blocks"][0].get("text", ""), position
+            return "", position
+        except Exception as e:
+            QMessageBox.warning(None, "Error", f"Could not start manual edit:\n{str(e)}")
+            return "", position
+
+    def add_text(self, page_number, text, position=(100, 100)):
+        """Add new text to the PDF"""
+        try:
+            page = self.doc[page_number]
+            page.insert_text(position, text)
+            self.doc.saveIncr()
+            self.show_page(page_number)
+            return True
+        except Exception as e:
+            QMessageBox.warning(None, "Error Adding Text", 
+                              f"Could not add text to page {page_number + 1}:\n{str(e)}")
+            return False
+
+    def add_highlight(self, page_number, text):
+        """Highlight text in the PDF"""
+        try:
+            page = self.doc[page_number]
+            text_instances = page.search_for(text)
+            for inst in text_instances:
+                highlight = page.add_highlight_annot(inst)
+                highlight.update()
+            self.doc.saveIncr()
+            self.show_page(page_number)
+            return True
+        except Exception as e:
+            QMessageBox.warning(None, "Error Highlighting Text", 
+                              f"Could not highlight text on page {page_number + 1}:\n{str(e)}")
+            return False
+
+    def add_annotation(self, page_number, text, position=(100, 100)):
+        """Add a text annotation (comment) to the PDF"""
+        try:
+            page = self.doc[page_number]
+            annot = page.add_text_annot(position, text)
+            annot.update()
+            self.doc.saveIncr()
+            self.show_page(page_number)
+            return True
+        except Exception as e:
+            QMessageBox.warning(None, "Error Adding Annotation", 
+                              f"Could not add annotation to page {page_number + 1}:\n{str(e)}")
+            return False

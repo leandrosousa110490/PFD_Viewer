@@ -2,6 +2,7 @@ import sys
 import os
 import shutil
 import tempfile
+from collections import deque
 
 # PDF Handling
 import fitz  # PyMuPDF
@@ -47,7 +48,7 @@ class EditDialog(QDialog):
         edit_select_layout = QHBoxLayout()
         edit_select_layout.addWidget(QLabel("Edit Operation:"))
         self.edit_combo = QComboBox()
-        self.edit_combo.addItems(["Replace Text", "Highlight Text"])
+        self.edit_combo.addItems(["Replace Text", "Highlight Text", "Delete Text"])
         edit_select_layout.addWidget(self.edit_combo)
         layout.addLayout(edit_select_layout)
 
@@ -80,6 +81,18 @@ class EditDialog(QDialog):
         highlight_layout.addWidget(highlight_btn)
         highlight_widget.setLayout(highlight_layout)
         self.stacked_widget.addWidget(highlight_widget)
+
+        # Delete Text widget
+        delete_widget = QWidget()
+        delete_layout = QVBoxLayout()
+        self.delete_text = QLineEdit()
+        self.delete_text.setPlaceholderText("Text to delete")
+        delete_layout.addWidget(self.delete_text)
+        delete_btn = QPushButton("Delete")
+        delete_btn.clicked.connect(self.delete_text_action)
+        delete_layout.addWidget(delete_btn)
+        delete_widget.setLayout(delete_layout)
+        self.stacked_widget.addWidget(delete_widget)
 
         layout.addWidget(self.stacked_widget)
 
@@ -120,6 +133,18 @@ class EditDialog(QDialog):
                 QMessageBox.information(self, "Success", "Text highlighted!")
             else:
                 QMessageBox.warning(self, "Failure", "Highlight failed.")
+
+    def delete_text_action(self):
+        if not self.pdf_widget:
+            return
+        page_num = self.page_spin.value() - 1
+        text = self.delete_text.text().strip()
+        if text:
+            success = self.pdf_widget.delete_text(page_num, text)
+            if success:
+                QMessageBox.information(self, "Success", "Text deleted!")
+            else:
+                QMessageBox.warning(self, "Failure", "Text deletion failed.")
 
 
 ###############################################################################
@@ -180,6 +205,8 @@ class PDFViewWidget(QWidget):
         self.edit_mode = False
         self.text_placement_mode = False
         self.current_page_index = None
+        self.undo_stack = deque(maxlen=50)  # Store last 50 actions
+        self.redo_stack = deque(maxlen=50)
 
         # Map from GUI font names to built-in PDF fonts (to fix "need font file" error).
         self.font_map = {
@@ -426,6 +453,25 @@ class PDFViewWidget(QWidget):
             return True
         except Exception as e:
             QMessageBox.warning(self, "Error", f"Failed to highlight text:\n{str(e)}")
+            return False
+
+    def delete_text(self, page_number, text):
+        """Delete all occurrences of `text` on a given page."""
+        if not self.doc:
+            return False
+        try:
+            page = self.doc[page_number]
+            matches = page.search_for(text)
+            if matches:
+                for rect in matches:
+                    page.add_redact_annot(rect)
+                page.apply_redactions()
+                self.doc.saveIncr()
+                self.show_page(page_number)
+                return True
+            return False
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Failed to delete text:\n{str(e)}")
             return False
 
     def add_annotation(self, page_number, note, position=(100, 100)):

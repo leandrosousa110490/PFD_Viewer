@@ -283,6 +283,16 @@ class PDFViewWidget(QWidget):
 
         self.current_text_edit.focusOutEvent = custom_focus_out
 
+        # Zoom buttons at the bottom left
+        self.zoom_layout = QHBoxLayout()
+        self.zoom_in_button = QPushButton("+")
+        self.zoom_in_button.clicked.connect(self.zoom_in)
+        self.zoom_out_button = QPushButton("-")
+        self.zoom_out_button.clicked.connect(self.zoom_out)
+        self.zoom_layout.addWidget(self.zoom_out_button)
+        self.zoom_layout.addWidget(self.zoom_in_button)
+        main_layout.addLayout(self.zoom_layout)
+
     def load_pages(self):
         """Load and render all pages from the PDF doc."""
         for i in range(len(self.doc)):
@@ -563,6 +573,18 @@ class PDFViewWidget(QWidget):
         finally:
             self.current_text_edit.hide()
 
+    def zoom_in(self):
+        """Zoom in on the current PDF."""
+        self.zoom *= 1.2
+        for i in range(len(self.page_widgets)):
+            self.show_page(i)
+
+    def zoom_out(self):
+        """Zoom out on the current PDF."""
+        self.zoom /= 1.2
+        for i in range(len(self.page_widgets)):
+            self.show_page(i)
+
 
 ###############################################################################
 # Main Window: Contains menubar, toolbars, and QTabWidget for multiple PDFs
@@ -675,11 +697,6 @@ class PDFViewerApp(QMainWindow):
         annot_action = QAction("Add Annotation", self)
         annot_action.triggered.connect(self.add_annotation_dialog)
         toolbar.addAction(annot_action)
-
-        # Insert text button (shortcut to enable the “click to add text” mode)
-        add_text_action = QAction("Insert Text", self)
-        add_text_action.triggered.connect(self.start_text_placement)
-        toolbar.addAction(add_text_action)
 
     # ---------------------------------------------------------------------
     # FILE MENU ACTIONS
@@ -952,16 +969,6 @@ class PDFViewerApp(QMainWindow):
 
         dialog.setLayout(layout)
         dialog.exec_()
-
-    def start_text_placement(self):
-        """Shortcut to enable text placement mode for the current PDF."""
-        current_widget = self.tab_widget.currentWidget()
-        if not current_widget:
-            QMessageBox.warning(self, "No PDF", "Open a PDF first.")
-            return
-        # Turn on edit mode automatically
-        self.edit_mode_action.setChecked(True)
-        current_widget.start_edit_mode()
 
 
 def main():

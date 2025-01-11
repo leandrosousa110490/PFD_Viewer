@@ -1,7 +1,9 @@
+
 import sys
 import os
 import shutil
 import tempfile
+import json
 from collections import deque
 
 # PDF Handling
@@ -10,6 +12,8 @@ import fitz  # PyMuPDF
 # Word/Excel exports
 from docx import Document
 import openpyxl
+import pandas as pd
+import tempfile
 
 # PyQt5 imports
 from PyQt5.QtWidgets import (
@@ -17,7 +21,8 @@ from PyQt5.QtWidgets import (
     QAction, QToolBar, QMessageBox, QLabel, QVBoxLayout,
     QScrollArea, QWidget, QLineEdit, QDialog, QHBoxLayout,
     QSpinBox, QComboBox, QPushButton, QStackedWidget,
-    QColorDialog, QTextEdit, QMenu, QMenuBar, QInputDialog
+    QColorDialog, QTextEdit, QMenu, QMenuBar, QInputDialog,
+    QTableWidget, QTableWidgetItem, QTextBrowser
 )
 from PyQt5.QtGui import (
     QCursor, QFont, QColor, QPixmap, QImage
@@ -261,15 +266,22 @@ class PDFViewWidget(QWidget):
 
         # QLineEdit for placing new text
         self.current_text_edit = QLineEdit(self)
-        # Make it transparent & borderless => looks like you're typing on the PDF
+        # Make it visible with a semi-transparent background
         self.current_text_edit.setStyleSheet("""
-            border: none; 
-            background: transparent; 
-            color: black; 
-            font-size: 14px;
+            QLineEdit {
+                border: 1px solid #0078d7;
+                background: rgba(255, 255, 255, 0.9);
+                color: black;
+                font-size: 14px;
+                padding: 2px;
+            }
         """)
         self.current_text_edit.hide()
         self.current_text_edit.returnPressed.connect(self.finish_text_edit)
+        
+        # Add right-click menu for text editing
+        self.current_text_edit.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.current_text_edit.customContextMenuRequested.connect(self.show_text_edit_menu)
         # Override focus out to finalize or discard
         orig_focus_out = self.current_text_edit.focusOutEvent
 
@@ -282,6 +294,36 @@ class PDFViewWidget(QWidget):
             orig_focus_out(event)
 
         self.current_text_edit.focusOutEvent = custom_focus_out
+
+    def show_text_edit_menu(self, position):
+        """Show context menu for text editing."""
+        menu = QMenu()
+        delete_action = menu.addAction("Delete")
+        delete_action.triggered.connect(self.delete_current_text)
+        menu.exec_(self.current_text_edit.mapToGlobal(position))
+
+    def delete_current_text(self):
+        """Delete the currently selected text with precise boundary."""
+        if not hasattr(self.current_text_edit, 'original_word') or not self.current_text_edit.original_word:
+            return
+
+        try:
+            page = self.doc[self.current_page_index]
+            word = self.current_text_edit.original_word
+            
+            # Create a precise rectangle for just this word
+            rect = fitz.Rect(word[0], word[1], word[2], word[3])
+            
+            # Add redaction with exact boundaries
+            annot = page.add_redact_annot(rect)
+            annot.set_rect(rect)  # Ensure rect is exact
+            page.apply_redactions()
+            
+            self.doc.saveIncr()
+            self.show_page(self.current_page_index)
+            self.current_text_edit.hide()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not delete text:\n{str(e)}")
 
         # Zoom buttons at the bottom left
         self.zoom_layout = QHBoxLayout()
@@ -466,14 +508,26 @@ class PDFViewWidget(QWidget):
             return False
 
     def delete_text(self, page_number, text):
-        """Delete all occurrences of `text` on a given page."""
+        """Delete specific occurrences of `text` on a given page with improved precision."""
         if not self.doc:
             return False
         try:
             page = self.doc[page_number]
-            matches = page.search_for(text)
+            # Get exact word locations with more context
+            words = page.get_text("words")
+            matches = []
+            
+            # Find exact matches only
+            for word in words:
+                if word[4].strip() == text.strip():  # Compare exact text
+                    rect = fitz.Rect(word[0], word[1], word[2], word[3])
+                    matches.append(rect)
+            
             if matches:
                 for rect in matches:
+                    # Add small padding to avoid overlapping with nearby text
+                    rect.x0 -= 1
+                    rect.x1 += 1
                     page.add_redact_annot(rect)
                 page.apply_redactions()
                 self.doc.saveIncr()
@@ -484,20 +538,20 @@ class PDFViewWidget(QWidget):
             QMessageBox.warning(self, "Error", f"Failed to delete text:\n{str(e)}")
             return False
 
-    def add_annotation(self, page_number, note, position=(100, 100)):
-        """Add a text annotation (pop-up) to a page."""
+    def find_text(self, page_number, text):
+        """Find all occurrences of text on a given page without highlighting."""
         if not self.doc:
             return False
         try:
             page = self.doc[page_number]
-            annot = page.add_text_annot(position, note)
-            annot.update()
-            self.doc.saveIncr()
-            self.show_page(page_number)
-            return True
+            matches = page.search_for(text)
+            return len(matches) > 0
         except Exception as e:
-            QMessageBox.warning(self, "Error", f"Failed to add annotation:\n{str(e)}")
+            QMessageBox.warning(self, "Error", f"Failed to find text:\n{str(e)}")
             return False
+
+
+
 
     # ---------------------
     # Adding New Text via Mouse Click
@@ -523,42 +577,111 @@ class PDFViewWidget(QWidget):
         for pg_widget in self.page_widgets:
             pg_widget.page_label.mousePressEvent = None
 
+    def show_text_edit_menu(self, position):
+        """Show context menu for text editing."""
+        menu = QMenu()
+        delete_action = menu.addAction("Delete")
+        delete_action.triggered.connect(self.delete_current_text)
+        menu.exec_(self.current_text_edit.mapToGlobal(position))
+
     def handle_edit_click(self, event, page_idx):
-        """When user clicks on the PDF, show a transparent QLineEdit at that spot."""
+        """Enhanced click handler for text editing."""
         if not self.edit_mode:
             return
 
         self.current_page_index = page_idx
         pos = event.pos()
-        scale = 1.0 / self.zoom
-        pdf_x = pos.x() * scale
-        pdf_y = pos.y() * scale
+        
+        # Calculate PDF coordinates with proper scaling
+        page = self.doc[page_idx]
+        page_rect = page.rect
+        scale_x = page_rect.width / self.page_widgets[page_idx].page_label.width()
+        scale_y = page_rect.height / self.page_widgets[page_idx].page_label.height()
+        
+        pdf_x = pos.x() * scale_x
+        pdf_y = pos.y() * scale_y
+
+        # Check if there's existing text at click position
+        words = page.get_text("words")
+        clicked_word = None
+        for word in words:
+            # word tuple format: (x0, y0, x1, y1, word, block_no, line_no, word_no)
+            if (word[0] <= pdf_x <= word[2]) and (word[1] <= pdf_y <= word[3]):
+                clicked_word = word
+                break
 
         page_widget = self.page_widgets[page_idx]
         global_pos = page_widget.page_label.mapToGlobal(pos)
         widget_pos = self.mapFromGlobal(global_pos)
 
-        # Place the QLineEdit at the click
+        # Position and show text edit
         self.current_text_edit.move(widget_pos)
+        if clicked_word:
+            # Pre-fill with existing text if clicked on word
+            self.current_text_edit.setText(clicked_word[4])  # word[4] contains the text
+            self.current_text_edit.selectAll()
+            # Store original word info for deletion
+            self.current_text_edit.original_word = clicked_word
+        else:
+            self.current_text_edit.clear()
+            self.current_text_edit.original_word = None
+
         self.current_text_edit.resize(180, 25)
-        self.current_text_edit.clear()
         self.current_text_edit.show()
         self.current_text_edit.setFocus()
         self.current_text_edit.pdf_position = (pdf_x, pdf_y)
 
+    def delete_current_text(self):
+        """Delete the currently selected text."""
+        if not hasattr(self.current_text_edit, 'original_word') or not self.current_text_edit.original_word:
+            return
+
+        try:
+            page = self.doc[self.current_page_index]
+            word = self.current_text_edit.original_word
+            rect = fitz.Rect(word[0], word[1], word[2], word[3])
+            
+            # Create and apply redaction
+            page.add_redact_annot(rect)
+            page.apply_redactions()
+            
+            self.doc.saveIncr()
+            self.show_page(self.current_page_index)
+            self.current_text_edit.hide()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not delete text:\n{str(e)}")
+
     def finish_text_edit(self):
-        """Insert the typed text at the PDF coordinates."""
+        """Enhanced method to finish text editing."""
         if not self.current_text_edit.isVisible() or self.current_page_index is None:
             return
 
         new_text = self.current_text_edit.text().strip()
+        original_text = self.current_text_edit.original_word[4] if hasattr(self.current_text_edit, 'original_word') and self.current_text_edit.original_word else None
+
+        # If text hasn't changed, just hide the editor without making changes
+        if original_text and new_text == original_text:
+            self.current_text_edit.hide()
+            return
+
         if not new_text:
+            if hasattr(self.current_text_edit, 'original_word') and self.current_text_edit.original_word:
+                self.delete_current_text()
             self.current_text_edit.hide()
             return
 
         try:
-            fontname = self.font_map.get(self.text_style['font'], "helv")
             page = self.doc[self.current_page_index]
+            
+            # If replacing existing text, delete it first
+            if hasattr(self.current_text_edit, 'original_word') and self.current_text_edit.original_word:
+                word = self.current_text_edit.original_word
+                rect = fitz.Rect(word[0], word[1], word[2], word[3])
+                page.add_redact_annot(rect)
+                page.apply_redactions()
+
+            # Insert new text
+            fontname = self.font_map.get(self.text_style['font'], "helv")
             page.insert_text(
                 self.current_text_edit.pdf_position,
                 new_text,
@@ -566,6 +689,7 @@ class PDFViewWidget(QWidget):
                 fontname=fontname,
                 color=self.text_style['color']
             )
+            
             self.doc.saveIncr()
             self.show_page(self.current_page_index)
         except Exception as e:
@@ -592,7 +716,7 @@ class PDFViewWidget(QWidget):
 class PDFViewerApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("My PDF Viewer & Editor")
+        self.setWindowTitle("Universal File Viewer & Editor")
         self.resize(1200, 800)
 
         # Tab Widget
@@ -693,10 +817,6 @@ class PDFViewerApp(QMainWindow):
         find_action.triggered.connect(self.find_text_dialog)
         toolbar.addAction(find_action)
 
-        # Add annotation
-        annot_action = QAction("Add Annotation", self)
-        annot_action.triggered.connect(self.add_annotation_dialog)
-        toolbar.addAction(annot_action)
 
     # ---------------------------------------------------------------------
     # FILE MENU ACTIONS
@@ -705,29 +825,196 @@ class PDFViewerApp(QMainWindow):
         options = QFileDialog.Options()
         files, _ = QFileDialog.getOpenFileNames(
             self,
-            "Open PDF(s)",
+            "Open File(s)",
             "",
-            "PDF Files (*.pdf);;All Files (*)",
+            "All Supported Files (*.pdf *.xlsx *.xls *.csv *.json *.txt);;PDF Files (*.pdf);;Excel Files (*.xlsx *.xls);;CSV Files (*.csv);;JSON Files (*.json);;Text Files (*.txt);;All Files (*)",
             options=options
         )
         if files:
             for f in files:
-                self.add_pdf_tab(f)
+                self.add_file_tab(f)
 
-    def add_pdf_tab(self, pdf_path):
+    def add_file_tab(self, file_path):
         try:
-            viewer = PDFViewWidget(pdf_path)
-            if not viewer.doc:
+            extension = os.path.splitext(file_path)[1].lower()
+            viewer = None
+            
+            if extension == '.pdf':
+                viewer = PDFViewWidget(file_path)
+            elif extension in ['.xlsx', '.xls']:
+                viewer = self.create_excel_viewer(file_path)
+            elif extension == '.csv':
+                viewer = self.create_csv_viewer(file_path)
+            elif extension == '.json':
+                viewer = self.create_json_viewer(file_path)
+            elif extension == '.txt':
+                viewer = self.create_text_viewer(file_path)
+            else:
+                QMessageBox.warning(self, "Unsupported Format", "This file format is not supported.")
                 return
-            filename = os.path.basename(pdf_path)
-            self.tab_widget.addTab(viewer, filename)
+
+            if viewer:
+                filename = os.path.basename(file_path)
+                self.tab_widget.addTab(viewer, filename)
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Could not open PDF:\n{str(e)}")
+            QMessageBox.critical(self, "Error", f"Could not open file:\n{str(e)}")
+
+
+    def create_excel_viewer(self, file_path):
+        """Create an Excel viewer widget that supports images."""
+        try:
+            # Create a container widget
+            container = QWidget()
+            layout = QVBoxLayout(container)
+            
+            # Create table for data
+            table = QTableWidget()
+            df = pd.read_excel(file_path)
+            table.setRowCount(df.shape[0])
+            table.setColumnCount(df.shape[1])
+            table.setHorizontalHeaderLabels(df.columns)
+
+            # Load data and handle potential embedded images
+            wb = openpyxl.load_workbook(file_path)
+            ws = wb.active
+            
+            for row in range(df.shape[0]):
+                for col in range(df.shape[1]):
+                    cell = ws.cell(row=row+1, column=col+1)
+                    
+                    # Check if cell contains image
+                    if cell._hyperlink is not None and cell._hyperlink.target:
+                        try:
+                            image_path = cell._hyperlink.target
+                            label = QLabel()
+                            pixmap = QPixmap(image_path)
+                            label.setPixmap(pixmap.scaled(100, 100, Qt.KeepAspectRatio))
+                            table.setCellWidget(row, col, label)
+                        except:
+                            item = QTableWidgetItem(str(df.iloc[row, col]))
+                            table.setItem(row, col, item)
+                    else:
+                        item = QTableWidgetItem(str(df.iloc[row, col]))
+                        table.setItem(row, col, item)
+
+            layout.addWidget(table)
+            return container
+        except Exception as e:
+            QMessageBox.warning(self, "Excel Error", f"Could not read Excel file:\n{str(e)}")
+            return None
+
+    def create_csv_viewer(self, file_path):
+        """Create a CSV viewer widget."""
+        try:
+            df = pd.read_csv(file_path)
+            table = QTableWidget()
+            table.setRowCount(df.shape[0])
+            table.setColumnCount(df.shape[1])
+            table.setHorizontalHeaderLabels(df.columns)
+
+            for row in range(df.shape[0]):
+                for col in range(df.shape[1]):
+                    item = QTableWidgetItem(str(df.iloc[row, col]))
+                    table.setItem(row, col, item)
+
+            return table
+        except Exception as e:
+            QMessageBox.warning(self, "CSV Error", f"Could not read CSV file:\n{str(e)}")
+            return None
+
+    def create_json_viewer(self, file_path):
+        """Create a JSON viewer widget."""
+        try:
+            with open(file_path, 'r') as f:
+                data = json.load(f)
+            
+            text_browser = QTextBrowser()
+            text_browser.setPlainText(json.dumps(data, indent=2))
+            return text_browser
+        except Exception as e:
+            QMessageBox.warning(self, "JSON Error", f"Could not read JSON file:\n{str(e)}")
+            return None
+
+    def create_text_viewer(self, file_path):
+        """Create a text viewer widget."""
+        try:
+            with open(file_path, 'r') as f:
+                text = f.read()
+            
+            text_browser = QTextBrowser()
+            text_browser.setPlainText(text)
+            return text_browser
+        except Exception as e:
+            QMessageBox.warning(self, "Text Error", f"Could not read text file:\n{str(e)}")
+            return None
+
+    def create_word_viewer(self, file_path):
+        """Create a Word document viewer that properly handles text and images."""
+        try:
+            # Create scrollable text widget
+            text_widget = QTextEdit()
+            text_widget.setReadOnly(True)
+            
+            # Load the document
+            doc = Document(file_path)
+            
+            # Create a temporary directory for images
+            temp_dir = tempfile.mkdtemp()
+            
+            try:
+                # Process paragraphs and images
+                for paragraph in doc.paragraphs:
+                    text_widget.append(paragraph.text)
+                    
+                    # Handle inline images
+                    for run in paragraph.runs:
+                        if 'w:drawing' in run._element.xml or 'w:pict' in run._element.xml:
+                            # Extract image
+                            for element in run._element.findall('.//v:imagedata', run._element.nsmap):
+                                image_rid = element.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
+                                if image_rid:
+                                    image_part = doc.part.related_parts[image_rid]
+                                    image_bytes = image_part.blob
+                                    
+                                    # Save image temporarily
+                                    img_path = os.path.join(temp_dir, f"img_{image_rid}.png")
+                                    with open(img_path, 'wb') as img_file:
+                                        img_file.write(image_bytes)
+                                    
+                                    # Insert image into text widget
+                                    cursor = text_widget.textCursor()
+                                    image_format = text_widget.textCursor().charFormat()
+                                    image = QImage(img_path)
+                                    if not image.isNull():
+                                        # Scale image if too large
+                                        if image.width() > 800:
+                                            image = image.scaledToWidth(800, Qt.SmoothTransformation)
+                                        text_widget.document().addResource(
+                                            QTextDocument.ImageResource,
+                                            img_path,
+                                            image
+                                        )
+                                        cursor.insertImage(img_path)
+                                        text_widget.append("")  # Add newline after image
+                
+                return text_widget
+                
+            finally:
+                # Cleanup temporary files
+                try:
+                    shutil.rmtree(temp_dir)
+                except:
+                    pass
+                    
+        except Exception as e:
+            QMessageBox.warning(self, "Word Error", f"Could not read Word file:\n{str(e)}")
+            return None
 
     def close_tab(self, index):
         widget = self.tab_widget.widget(index)
         if widget:
-            widget.cleanup_temp_files()
+            if hasattr(widget, 'cleanup_temp_files'):
+                widget.cleanup_temp_files()
             self.tab_widget.removeTab(index)
 
     def close_current_file(self):
@@ -738,16 +1025,46 @@ class PDFViewerApp(QMainWindow):
     def save_pdf_as(self):
         current_widget = self.tab_widget.currentWidget()
         if not current_widget or not hasattr(current_widget, "save_as"):
-            QMessageBox.warning(self, "No PDF", "Open a PDF first.")
+            QMessageBox.warning(self, "No File", "Open a file first.")
             return
 
         file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save PDF As...", "", "PDF Files (*.pdf);;All Files (*)"
+            self, "Save As...", "", 
+            "PDF Files (*.pdf);;Excel Files (*.xlsx);;CSV Files (*.csv);;JSON Files (*.json);;Text Files (*.txt);;All Files (*)"
         )
         if file_path:
-            success = current_widget.save_as(file_path)
-            if success:
-                QMessageBox.information(self, "Saved", "PDF saved successfully!")
+            try:
+                if isinstance(current_widget, PDFViewWidget):
+                    success = current_widget.save_as(file_path)
+                elif isinstance(current_widget, QTableWidget):
+                    # For Excel and CSV
+                    model = current_widget.model()
+                    df = pd.DataFrame(
+                        [[current_widget.item(row, col).text() for col in range(current_widget.columnCount())] 
+                         for row in range(current_widget.rowCount())],
+                        columns=[current_widget.horizontalHeaderItem(col).text() for col in range(current_widget.columnCount())]
+                    )
+                    
+                    ext = os.path.splitext(file_path)[1].lower()
+                    if ext in ['.xlsx', '.xls']:
+                        df.to_excel(file_path, index=False)
+                    elif ext == '.csv':
+                        df.to_csv(file_path, index=False)
+                    success = True
+                elif isinstance(current_widget, QTextBrowser):
+                    # For JSON and Text files
+                    with open(file_path, 'w') as f:
+                        f.write(current_widget.toPlainText())
+                    success = True
+                else:
+                    success = False
+
+                if success:
+                    QMessageBox.information(self, "Saved", "File saved successfully!")
+                else:
+                    QMessageBox.warning(self, "Save Failed", "Could not save the file.")
+            except Exception as e:
+                QMessageBox.critical(self, "Error", f"Could not save file:\n{str(e)}")
 
     def save_pdf_as_word(self):
         current_widget = self.tab_widget.currentWidget()
@@ -905,70 +1222,30 @@ class PDFViewerApp(QMainWindow):
         self.update_text_style()
 
     def find_text_dialog(self):
-        """Simple dialog to search text in the current PDF (and highlight)."""
+        """Simple dialog to search text in the current PDF (without highlighting)."""
         current_widget = self.tab_widget.currentWidget()
         if not current_widget or not current_widget.doc:
             QMessageBox.warning(self, "No PDF", "Open a PDF first.")
             return
 
-        text, ok = QInputDialog.getText(self, "Find Text", "Enter text to highlight:")
+        text, ok = QInputDialog.getText(self, "Find Text", "Enter text to find:")
         if ok and text.strip():
-            found_any = False
+            found_pages = []
             for page_idx in range(current_widget.doc.page_count):
-                success = current_widget.add_highlight(page_idx, text.strip())
-                if success:
-                    found_any = True
-            if found_any:
-                QMessageBox.information(self, "Done", "Highlighted occurrences in document.")
+                if current_widget.find_text(page_idx, text.strip()):
+                    found_pages.append(str(page_idx + 1))
+            
+            if found_pages:
+                QMessageBox.information(
+                    self, 
+                    "Found", 
+                    f"Text found on page(s): {', '.join(found_pages)}"
+                )
             else:
-                QMessageBox.information(self, "Not Found", "No occurrences found.")
+                QMessageBox.information(self, "Not Found", "Text not found in document.")
 
-    def add_annotation_dialog(self):
-        """Dialog to add a text annotation (pop-up) on a specific page."""
-        current_widget = self.tab_widget.currentWidget()
-        if not current_widget or not current_widget.doc:
-            QMessageBox.warning(self, "No PDF", "Open a PDF first.")
-            return
 
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Add Annotation")
-        layout = QVBoxLayout()
 
-        # Page number
-        page_layout = QHBoxLayout()
-        page_layout.addWidget(QLabel("Page Number:"))
-        page_spin = QSpinBox()
-        page_spin.setMinimum(1)
-        page_spin.setMaximum(current_widget.doc.page_count)
-        page_layout.addWidget(page_spin)
-        layout.addLayout(page_layout)
-
-        # Annotation text
-        text_edit = QTextEdit()
-        text_edit.setPlaceholderText("Enter annotation text...")
-        layout.addWidget(text_edit)
-
-        # Add button
-        btn_layout = QHBoxLayout()
-        add_btn = QPushButton("Add Annotation")
-        btn_layout.addWidget(add_btn)
-        layout.addLayout(btn_layout)
-
-        def do_add_annotation():
-            note = text_edit.toPlainText().strip()
-            pg = page_spin.value() - 1
-            if note:
-                success = current_widget.add_annotation(pg, note)
-                if success:
-                    QMessageBox.information(dialog, "Success", "Annotation added.")
-                    dialog.accept()
-                else:
-                    QMessageBox.warning(dialog, "Failure", "Failed to add annotation.")
-
-        add_btn.clicked.connect(do_add_annotation)
-
-        dialog.setLayout(layout)
-        dialog.exec_()
 
 
 def main():

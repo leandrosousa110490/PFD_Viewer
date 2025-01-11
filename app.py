@@ -799,6 +799,7 @@ class PDFViewerApp(QMainWindow):
 
         # We'll keep track of whether dark mode is ON or OFF
         self.dark_mode_enabled = False
+        self.file_paths = {}  # Store original file paths
 
     def create_menus(self):
         menubar = self.menuBar()
@@ -809,6 +810,12 @@ class PDFViewerApp(QMainWindow):
         open_action = QAction("Open PDF...", self)
         open_action.triggered.connect(self.open_pdf)
         file_menu.addAction(open_action)
+
+        # Add Save action before Save As
+        save_action = QAction("Save", self)
+        save_action.setShortcut("Ctrl+S")
+        save_action.triggered.connect(self.save_file)
+        file_menu.addAction(save_action)
 
         # Save As sub-menu
         save_as_menu = QMenu("Save As", self)
@@ -930,7 +937,9 @@ class PDFViewerApp(QMainWindow):
 
             if viewer:
                 filename = os.path.basename(file_path)
-                self.tab_widget.addTab(viewer, filename)
+                index = self.tab_widget.addTab(viewer, filename)
+                self.file_paths[index] = file_path  # Store original file path
+                
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not open file:\n{str(e)}")
 
@@ -1101,11 +1110,89 @@ class PDFViewerApp(QMainWindow):
             if hasattr(widget, 'cleanup_temp_files'):
                 widget.cleanup_temp_files()
             self.tab_widget.removeTab(index)
+        if index in self.file_paths:
+            del self.file_paths[index]
 
     def close_current_file(self):
         idx = self.tab_widget.currentIndex()
         if idx >= 0:
             self.close_tab(idx)
+
+    def save_file(self):
+        """Save the current file in its original format."""
+        current_widget = self.tab_widget.currentWidget()
+        if not current_widget:
+            QMessageBox.warning(self, "No File", "No file is open.")
+            return
+
+        current_index = self.tab_widget.currentIndex()
+        if current_index not in self.file_paths:
+            # If no original path, do Save As instead
+            return self.save_pdf_as()
+
+        original_path = self.file_paths[current_index]
+        try:
+            # Handle different file types
+            if isinstance(current_widget, PDFViewWidget):
+                success = current_widget.save_as(original_path)
+            
+            elif isinstance(current_widget, QTableWidget):
+                # Save Excel/CSV
+                ext = os.path.splitext(original_path)[1].lower()
+                data = []
+                headers = []
+                
+                for col in range(current_widget.columnCount()):
+                    header_item = current_widget.horizontalHeaderItem(col)
+                    headers.append(header_item.text() if header_item else f"Column {col+1}")
+                
+                for row in range(current_widget.rowCount()):
+                    row_data = []
+                    for col in range(current_widget.columnCount()):
+                        item = current_widget.item(row, col)
+                        row_data.append(item.text() if item else "")
+                    data.append(row_data)
+                
+                df = pd.DataFrame(data, columns=headers)
+                if ext in ['.xlsx', '.xls']:
+                    df.to_excel(original_path, index=False)
+                else:  # CSV
+                    df.to_csv(original_path, index=False)
+                success = True
+            
+            elif isinstance(current_widget, QTextEdit):
+                # Save JSON/Text with proper formatting
+                ext = os.path.splitext(original_path)[1].lower()
+                content = current_widget.toPlainText()
+                
+                if ext == '.json':
+                    # Validate and format JSON before saving
+                    try:
+                        data = json.loads(content)
+                        content = json.dumps(data, indent=2)
+                    except json.JSONDecodeError:
+                        raise ValueError("Invalid JSON content")
+                
+                with open(original_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                success = True
+            
+            elif isinstance(current_widget, QTextBrowser):
+                # Save text files
+                with open(original_path, 'w', encoding='utf-8') as f:
+                    f.write(current_widget.toPlainText())
+                success = True
+            
+            else:
+                success = False
+
+            if success:
+                QMessageBox.information(self, "Saved", "File saved successfully!")
+            else:
+                QMessageBox.warning(self, "Save Failed", "Could not save the file.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not save file:\n{str(e)}")
 
     def save_pdf_as(self):
         current_widget = self.tab_widget.currentWidget()

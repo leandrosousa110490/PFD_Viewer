@@ -181,6 +181,15 @@ class PDFViewWidget(QWidget):
         self.zoom_layout.addWidget(self.zoom_in_button)
         main_layout.addLayout(self.zoom_layout)
 
+        # Enable text editing mode by default
+        self.edit_mode = True
+        self.text_placement_mode = True
+        
+        # Add mouse event handling to each page
+        for i, pg_widget in enumerate(self.page_widgets):
+            pg_widget.page_label.setMouseTracking(True)
+            pg_widget.page_label.mousePressEvent = lambda e, idx=i: self.handle_edit_click(e, idx)
+
     def show_text_edit_menu(self, position):
         """Show context menu for text editing."""
         menu = QMenu()
@@ -442,9 +451,6 @@ class PDFViewWidget(QWidget):
 
     def handle_edit_click(self, event, page_idx):
         """Enhanced click handler for text editing."""
-        if not self.edit_mode:
-            return
-
         self.current_page_index = page_idx
         pos = event.pos()
         
@@ -461,7 +467,6 @@ class PDFViewWidget(QWidget):
         words = page.get_text("words")
         clicked_word = None
         for word in words:
-            # word tuple format: (x0, y0, x1, y1, word, block_no, line_no, word_no)
             if (word[0] <= pdf_x <= word[2]) and (word[1] <= pdf_y <= word[3]):
                 clicked_word = word
                 break
@@ -474,18 +479,23 @@ class PDFViewWidget(QWidget):
         self.current_text_edit.move(widget_pos)
         if clicked_word:
             # Pre-fill with existing text if clicked on word
-            self.current_text_edit.setText(clicked_word[4])  # word[4] contains the text
+            self.current_text_edit.setText(clicked_word[4])
             self.current_text_edit.selectAll()
-            # Store original word info for deletion
             self.current_text_edit.original_word = clicked_word
         else:
             self.current_text_edit.clear()
             self.current_text_edit.original_word = None
 
-        self.current_text_edit.resize(180, 25)
+        # Set size based on text length or default
+        text_width = max(180, len(self.current_text_edit.text()) * 10)
+        self.current_text_edit.resize(text_width, 25)
         self.current_text_edit.show()
         self.current_text_edit.setFocus()
         self.current_text_edit.pdf_position = (pdf_x, pdf_y)
+        
+        # Create context menu
+        self.current_text_edit.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.current_text_edit.customContextMenuRequested.connect(self.show_text_edit_menu)
 
     def delete_current_text(self):
         """Delete the currently selected text."""
@@ -543,7 +553,8 @@ class PDFViewWidget(QWidget):
                 new_text,
                 fontsize=self.text_style['size'],
                 fontname=fontname,
-                color=self.text_style['color']
+                color=self.text_style['color'],
+                render_mode=0  # Ensure text is rendered normally
             )
             
             self.doc.saveIncr()

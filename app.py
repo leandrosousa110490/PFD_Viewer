@@ -1,4 +1,3 @@
-
 import sys
 import os
 import shutil
@@ -36,9 +35,35 @@ from PyQt5.QtCore import Qt
 class EditDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Edit PDF")
+        self.setWindowTitle("Edit Document")
         self.setModal(True)
 
+        layout = QVBoxLayout()
+
+        # Add file type specific controls based on the current widget type
+        self.widget_type_label = QLabel("Current document type: ")
+        layout.addWidget(self.widget_type_label)
+
+        # Stacked widget for different edit operations
+        self.stacked_widget = QStackedWidget()
+
+        # PDF editing widget
+        pdf_widget = QWidget()
+        pdf_layout = self.create_pdf_edit_layout()
+        pdf_widget.setLayout(pdf_layout)
+        self.stacked_widget.addWidget(pdf_widget)
+
+        # Excel editing widget
+        excel_widget = QWidget()
+        excel_layout = self.create_excel_edit_layout()
+        excel_widget.setLayout(excel_layout)
+        self.stacked_widget.addWidget(excel_widget)
+
+        layout.addWidget(self.stacked_widget)
+        self.setLayout(layout)
+        self.current_widget = None
+
+    def create_pdf_edit_layout(self):
         layout = QVBoxLayout()
 
         # Page number selection
@@ -104,52 +129,98 @@ class EditDialog(QDialog):
         # Connect combo box to stacked widget
         self.edit_combo.currentIndexChanged.connect(self.stacked_widget.setCurrentIndex)
 
-        self.setLayout(layout)
-        self.pdf_widget = None
+        return layout
 
-    def set_pdf_widget(self, widget):
-        self.pdf_widget = widget
-        # Set pageSpin max
-        if widget and widget.doc:
+    def create_excel_edit_layout(self):
+        layout = QVBoxLayout()
+        self.cell_edit = QLineEdit()
+        self.cell_edit.setPlaceholderText("Enter new cell value")
+        layout.addWidget(QLabel("Edit Cell Value:"))
+        layout.addWidget(self.cell_edit)
+        
+        apply_btn = QPushButton("Apply")
+        apply_btn.clicked.connect(self.apply_excel_edit)
+        layout.addWidget(apply_btn)
+        return layout
+
+    def set_current_widget(self, widget):
+        self.current_widget = widget
+        if isinstance(widget, PDFViewWidget) and hasattr(widget, 'doc') and widget.doc:
+            self.widget_type_label.setText("Current document type: PDF")
+            self.stacked_widget.setCurrentIndex(0)
             self.page_spin.setMaximum(len(widget.doc))
+        elif isinstance(widget, QTableWidget):  # Excel/CSV viewer
+            self.widget_type_label.setText("Current document type: Spreadsheet")
+            self.stacked_widget.setCurrentIndex(1)
+            self.cell_edit.setText(widget.currentItem().text() if widget.currentItem() else "")
+        else:
+            QMessageBox.warning(self, "Error", "Unsupported file type for editing.")
+            self.reject()  # Close dialog
+
+    def apply_excel_edit(self):
+        if isinstance(self.current_widget, QTableWidget):
+            current_cell = self.current_widget.currentItem()
+            if current_cell:
+                current_cell.setText(self.cell_edit.text())
 
     def replace_text(self):
-        if not self.pdf_widget:
+        if not self.current_widget or not isinstance(self.current_widget, PDFViewWidget):
             return
+        if not hasattr(self.current_widget, 'doc') or not self.current_widget.doc:
+            QMessageBox.warning(self, "Error", "PDF document is not properly loaded.")
+            return
+            
         page_num = self.page_spin.value() - 1
         old_txt = self.old_text.text()
         new_txt = self.new_text.text()
 
         if old_txt.strip() and new_txt.strip():
-            success = self.pdf_widget.edit_text(page_num, old_txt, new_txt)
-            if success:
-                QMessageBox.information(self, "Success", "Text replaced!")
-            else:
-                QMessageBox.warning(self, "Failure", "Text replace failed.")
+            try:
+                success = self.current_widget.edit_text(page_num, old_txt, new_txt)
+                if success:
+                    QMessageBox.information(self, "Success", "Text replaced!")
+                else:
+                    QMessageBox.warning(self, "Failure", "Text replace failed.")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to replace text: {str(e)}")
 
     def highlight_text_action(self):
-        if not self.pdf_widget:
+        if not self.current_widget or not isinstance(self.current_widget, PDFViewWidget):
             return
+        if not hasattr(self.current_widget, 'doc') or not self.current_widget.doc:
+            QMessageBox.warning(self, "Error", "PDF document is not properly loaded.")
+            return
+            
         page_num = self.page_spin.value() - 1
         text = self.highlight_text.text().strip()
         if text:
-            success = self.pdf_widget.add_highlight(page_num, text)
-            if success:
-                QMessageBox.information(self, "Success", "Text highlighted!")
-            else:
-                QMessageBox.warning(self, "Failure", "Highlight failed.")
+            try:
+                success = self.current_widget.add_highlight(page_num, text)
+                if success:
+                    QMessageBox.information(self, "Success", "Text highlighted!")
+                else:
+                    QMessageBox.warning(self, "Failure", "Highlight failed.")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to highlight text: {str(e)}")
 
     def delete_text_action(self):
-        if not self.pdf_widget:
+        if not self.current_widget or not isinstance(self.current_widget, PDFViewWidget):
             return
+        if not hasattr(self.current_widget, 'doc') or not self.current_widget.doc:
+            QMessageBox.warning(self, "Error", "PDF document is not properly loaded.")
+            return
+            
         page_num = self.page_spin.value() - 1
         text = self.delete_text.text().strip()
         if text:
-            success = self.pdf_widget.delete_text(page_num, text)
-            if success:
-                QMessageBox.information(self, "Success", "Text deleted!")
-            else:
-                QMessageBox.warning(self, "Failure", "Text deletion failed.")
+            try:
+                success = self.current_widget.delete_text(page_num, text)
+                if success:
+                    QMessageBox.information(self, "Success", "Text deleted!")
+                else:
+                    QMessageBox.warning(self, "Failure", "Text deletion failed.")
+            except Exception as e:
+                QMessageBox.warning(self, "Error", f"Failed to delete text: {str(e)}")
 
 
 ###############################################################################
@@ -295,37 +366,7 @@ class PDFViewWidget(QWidget):
 
         self.current_text_edit.focusOutEvent = custom_focus_out
 
-    def show_text_edit_menu(self, position):
-        """Show context menu for text editing."""
-        menu = QMenu()
-        delete_action = menu.addAction("Delete")
-        delete_action.triggered.connect(self.delete_current_text)
-        menu.exec_(self.current_text_edit.mapToGlobal(position))
-
-    def delete_current_text(self):
-        """Delete the currently selected text with precise boundary."""
-        if not hasattr(self.current_text_edit, 'original_word') or not self.current_text_edit.original_word:
-            return
-
-        try:
-            page = self.doc[self.current_page_index]
-            word = self.current_text_edit.original_word
-            
-            # Create a precise rectangle for just this word
-            rect = fitz.Rect(word[0], word[1], word[2], word[3])
-            
-            # Add redaction with exact boundaries
-            annot = page.add_redact_annot(rect)
-            annot.set_rect(rect)  # Ensure rect is exact
-            page.apply_redactions()
-            
-            self.doc.saveIncr()
-            self.show_page(self.current_page_index)
-            self.current_text_edit.hide()
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Could not delete text:\n{str(e)}")
-
-        # Zoom buttons at the bottom left
+        # Add zoom buttons at the bottom
         self.zoom_layout = QHBoxLayout()
         self.zoom_in_button = QPushButton("+")
         self.zoom_in_button.clicked.connect(self.zoom_in)
@@ -334,6 +375,33 @@ class PDFViewWidget(QWidget):
         self.zoom_layout.addWidget(self.zoom_out_button)
         self.zoom_layout.addWidget(self.zoom_in_button)
         main_layout.addLayout(self.zoom_layout)
+
+    def show_text_edit_menu(self, position):
+        """Show context menu for text editing."""
+        menu = QMenu()
+        delete_action = menu.addAction("Delete")
+        delete_action.triggered.connect(self.delete_current_text)
+        menu.exec_(self.current_text_edit.mapToGlobal(position))
+
+    def delete_current_text(self):
+        """Delete the currently selected text."""
+        if not hasattr(self.current_text_edit, 'original_word') or not self.current_text_edit.original_word:
+            return
+
+        try:
+            page = self.doc[self.current_page_index]
+            word = self.current_text_edit.original_word
+            rect = fitz.Rect(word[0], word[1], word[2], word[3])
+            
+            # Create and apply redaction
+            page.add_redact_annot(rect)
+            page.apply_redactions()
+            
+            self.doc.saveIncr()
+            self.show_page(self.current_page_index)
+            self.current_text_edit.hide()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not delete text:\n{str(e)}")
 
     def load_pages(self):
         """Load and render all pages from the PDF doc."""
@@ -827,7 +895,14 @@ class PDFViewerApp(QMainWindow):
             self,
             "Open File(s)",
             "",
-            "All Supported Files (*.pdf *.xlsx *.xls *.csv *.json *.txt);;PDF Files (*.pdf);;Excel Files (*.xlsx *.xls);;CSV Files (*.csv);;JSON Files (*.json);;Text Files (*.txt);;All Files (*)",
+            "All Supported Files (*.pdf *.xlsx *.xls *.csv *.json *.txt *.doc *.docx)"
+            ";;PDF Files (*.pdf)"
+            ";;Word Files (*.doc *.docx)"
+            ";;Excel Files (*.xlsx *.xls)"
+            ";;CSV Files (*.csv)"
+            ";;JSON Files (*.json)"
+            ";;Text Files (*.txt)"
+            ";;All Files (*)",
             options=options
         )
         if files:
@@ -923,14 +998,27 @@ class PDFViewerApp(QMainWindow):
             return None
 
     def create_json_viewer(self, file_path):
-        """Create a JSON viewer widget."""
+        """Create an editable JSON viewer that preserves formatting."""
         try:
             with open(file_path, 'r') as f:
-                data = json.load(f)
+                text = f.read()
+                data = json.loads(text)
             
-            text_browser = QTextBrowser()
-            text_browser.setPlainText(json.dumps(data, indent=2))
-            return text_browser
+            text_edit = QTextEdit()
+            text_edit.setPlainText(text)
+            
+            def on_text_changed():
+                try:
+                    # Validate JSON while typing
+                    json.loads(text_edit.toPlainText())
+                    text_edit.setStyleSheet("")
+                except json.JSONDecodeError:
+                    # Highlight in red if invalid JSON
+                    text_edit.setStyleSheet("background-color: #FFE4E1;")
+            
+            text_edit.textChanged.connect(on_text_changed)
+            return text_edit
+                
         except Exception as e:
             QMessageBox.warning(self, "JSON Error", f"Could not read JSON file:\n{str(e)}")
             return None
@@ -963,44 +1051,41 @@ class PDFViewerApp(QMainWindow):
             
             try:
                 # Process paragraphs and images
-                for paragraph in doc.paragraphs:
-                    text_widget.append(paragraph.text)
+                for para in doc.paragraphs:
+                    text_widget.append(para.text)
                     
                     # Handle inline images
-                    for run in paragraph.runs:
-                        if 'w:drawing' in run._element.xml or 'w:pict' in run._element.xml:
-                            # Extract image
-                            for element in run._element.findall('.//v:imagedata', run._element.nsmap):
-                                image_rid = element.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
-                                if image_rid:
-                                    image_part = doc.part.related_parts[image_rid]
-                                    image_bytes = image_part.blob
-                                    
-                                    # Save image temporarily
-                                    img_path = os.path.join(temp_dir, f"img_{image_rid}.png")
-                                    with open(img_path, 'wb') as img_file:
-                                        img_file.write(image_bytes)
-                                    
-                                    # Insert image into text widget
-                                    cursor = text_widget.textCursor()
-                                    image_format = text_widget.textCursor().charFormat()
-                                    image = QImage(img_path)
-                                    if not image.isNull():
-                                        # Scale image if too large
-                                        if image.width() > 800:
-                                            image = image.scaledToWidth(800, Qt.SmoothTransformation)
-                                        text_widget.document().addResource(
-                                            QTextDocument.ImageResource,
-                                            img_path,
-                                            image
-                                        )
-                                        cursor.insertImage(img_path)
-                                        text_widget.append("")  # Add newline after image
+                    for run in para.runs:
+                        if hasattr(run, '_element') and run._element.find('.//w:drawing') is not None:
+                            try:
+                                # Get image data from the run
+                                image_data = run._element.find('.//w:drawing//a:blip')
+                                if image_data is not None:
+                                    rId = image_data.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
+                                    if rId:
+                                        image_part = doc.part.related_parts[rId]
+                                        image_bytes = image_part.blob
+                                        
+                                        # Save image temporarily
+                                        img_path = os.path.join(temp_dir, f"img_{rId}.png")
+                                        with open(img_path, 'wb') as img_file:
+                                            img_file.write(image_bytes)
+                                        
+                                        # Insert image into text widget
+                                        cursor = text_widget.textCursor()
+                                        image = QImage(img_path)
+                                        if not image.isNull():
+                                            if image.width() > 600:  # Limit image width
+                                                image = image.scaledToWidth(600, Qt.SmoothTransformation)
+                                            text_widget.textCursor().insertImage(image)
+                                            text_widget.append("")  # Add newline
+                            except Exception as e:
+                                print(f"Error handling image: {e}")
                 
                 return text_widget
                 
             finally:
-                # Cleanup temporary files
+                # Cleanup temp files
                 try:
                     shutil.rmtree(temp_dir)
                 except:
@@ -1024,47 +1109,157 @@ class PDFViewerApp(QMainWindow):
 
     def save_pdf_as(self):
         current_widget = self.tab_widget.currentWidget()
-        if not current_widget or not hasattr(current_widget, "save_as"):
+        if not current_widget:
             QMessageBox.warning(self, "No File", "Open a file first.")
             return
 
-        file_path, _ = QFileDialog.getSaveFileName(
-            self, "Save As...", "", 
-            "PDF Files (*.pdf);;Excel Files (*.xlsx);;CSV Files (*.csv);;JSON Files (*.json);;Text Files (*.txt);;All Files (*)"
+        # Create comprehensive filter for all supported formats
+        file_filter = (
+            "All Supported Files ("
+            "*.pdf *.xlsx *.xls *.csv *.json *.txt *.doc *.docx);;"
+            "PDF Files (*.pdf);;"
+            "Word Documents (*.doc *.docx);;"
+            "Excel Files (*.xlsx *.xls);;"
+            "CSV Files (*.csv);;"
+            "JSON Files (*.json);;"
+            "Text Files (*.txt);;"
+            "All Files (*)"
         )
-        if file_path:
-            try:
+
+        file_path, selected_filter = QFileDialog.getSaveFileName(
+            self, "Save As...", "", file_filter
+        )
+        
+        if not file_path:
+            return
+
+        try:
+            ext = os.path.splitext(file_path)[1].lower()
+            success = False
+
+            # Convert to pandas DataFrame if possible (for Excel/CSV)
+            if ext in ['.xlsx', '.xls', '.csv']:
+                if isinstance(current_widget, QTableWidget):
+                    # Get data from table widget
+                    data = []
+                    headers = []
+                    for col in range(current_widget.columnCount()):
+                        header_item = current_widget.horizontalHeaderItem(col)
+                        headers.append(header_item.text() if header_item else f"Column {col+1}")
+                    
+                    for row in range(current_widget.rowCount()):
+                        row_data = []
+                        for col in range(current_widget.columnCount()):
+                            item = current_widget.item(row, col)
+                            row_data.append(item.text() if item else "")
+                        data.append(row_data)
+                    
+                    df = pd.DataFrame(data, columns=headers)
+                
+                elif isinstance(current_widget, PDFViewWidget):
+                    # Extract text from PDF pages
+                    text_data = []
+                    for page_num in range(len(current_widget.doc)):
+                        page = current_widget.doc[page_num]
+                        text_data.append([page.get_text()])
+                    df = pd.DataFrame(text_data, columns=['Content'])
+                
+                elif isinstance(current_widget, (QTextEdit, QTextBrowser)):
+                    # Convert text content to DataFrame
+                    lines = current_widget.toPlainText().split('\n')
+                    df = pd.DataFrame(lines, columns=['Content'])
+                
+                # Save DataFrame
+                if ext in ['.xlsx', '.xls']:
+                    df.to_excel(file_path, index=False)
+                else:  # CSV
+                    df.to_csv(file_path, index=False)
+                success = True
+
+            # Handle Word export
+            elif ext in ['.doc', '.docx']:
+                doc = Document()
+                if isinstance(current_widget, PDFViewWidget):
+                    for page_num in range(len(current_widget.doc)):
+                        page = current_widget.doc[page_num]
+                        doc.add_paragraph(page.get_text())
+                elif isinstance(current_widget, QTableWidget):
+                    # Convert table to Word table
+                    table = doc.add_table(rows=current_widget.rowCount() + 1, 
+                                        cols=current_widget.columnCount())
+                    # Add headers
+                    for col in range(current_widget.columnCount()):
+                        header = current_widget.horizontalHeaderItem(col)
+                        table.cell(0, col).text = header.text() if header else f"Column {col+1}"
+                    # Add data
+                    for row in range(current_widget.rowCount()):
+                        for col in range(current_widget.columnCount()):
+                            item = current_widget.item(row, col)
+                            table.cell(row + 1, col).text = item.text() if item else ""
+                else:
+                    doc.add_paragraph(current_widget.toPlainText())
+                doc.save(file_path)
+                success = True
+
+            # Handle PDF export
+            elif ext == '.pdf':
                 if isinstance(current_widget, PDFViewWidget):
                     success = current_widget.save_as(file_path)
-                elif isinstance(current_widget, QTableWidget):
-                    # For Excel and CSV
-                    model = current_widget.model()
-                    df = pd.DataFrame(
-                        [[current_widget.item(row, col).text() for col in range(current_widget.columnCount())] 
-                         for row in range(current_widget.rowCount())],
-                        columns=[current_widget.horizontalHeaderItem(col).text() for col in range(current_widget.columnCount())]
-                    )
-                    
-                    ext = os.path.splitext(file_path)[1].lower()
-                    if ext in ['.xlsx', '.xls']:
-                        df.to_excel(file_path, index=False)
-                    elif ext == '.csv':
-                        df.to_csv(file_path, index=False)
-                    success = True
-                elif isinstance(current_widget, QTextBrowser):
-                    # For JSON and Text files
-                    with open(file_path, 'w') as f:
-                        f.write(current_widget.toPlainText())
-                    success = True
                 else:
-                    success = False
+                    # Convert other content to PDF
+                    pdf = fitz.open()
+                    page = pdf.new_page()
+                    if isinstance(current_widget, QTableWidget):
+                        # Convert table to text for PDF
+                        text = ""
+                        for row in range(current_widget.rowCount()):
+                            row_text = []
+                            for col in range(current_widget.columnCount()):
+                                item = current_widget.item(row, col)
+                                row_text.append(item.text() if item else "")
+                            text += "\t".join(row_text) + "\n"
+                        page.insert_text((50, 50), text)
+                    else:
+                        page.insert_text((50, 50), current_widget.toPlainText())
+                    pdf.save(file_path)
+                    success = True
 
-                if success:
-                    QMessageBox.information(self, "Saved", "File saved successfully!")
-                else:
-                    QMessageBox.warning(self, "Save Failed", "Could not save the file.")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Could not save file:\n{str(e)}")
+            # Handle JSON/Text
+            elif ext in ['.json', '.txt']:
+                content = ""
+                if isinstance(current_widget, (QTextEdit, QTextBrowser)):
+                    content = current_widget.toPlainText()
+                elif isinstance(current_widget, QTableWidget):
+                    # Convert table to JSON
+                    data = []
+                    for row in range(current_widget.rowCount()):
+                        row_data = {}
+                        for col in range(current_widget.columnCount()):
+                            header = current_widget.horizontalHeaderItem(col)
+                            key = header.text() if header else f"Column {col+1}"
+                            item = current_widget.item(row, col)
+                            row_data[key] = item.text() if item else ""
+                        data.append(row_data)
+                    if ext == '.json':
+                        content = json.dumps(data, indent=2)
+                    else:
+                        content = str(data)
+                elif isinstance(current_widget, PDFViewWidget):
+                    content = ""
+                    for page_num in range(len(current_widget.doc)):
+                        content += current_widget.doc[page_num].get_text()
+
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    f.write(content)
+                success = True
+
+            if success:
+                QMessageBox.information(self, "Success", "File saved successfully!")
+            else:
+                QMessageBox.warning(self, "Error", "Could not save in the selected format.")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Could not save file:\n{str(e)}")
 
     def save_pdf_as_word(self):
         current_widget = self.tab_widget.currentWidget()
@@ -1098,14 +1293,23 @@ class PDFViewerApp(QMainWindow):
     # EDIT MENU ACTIONS
     # ---------------------------------------------------------------------
     def edit_pdf(self):
+        """Show edit dialog with proper handling for different file types."""
         current_widget = self.tab_widget.currentWidget()
         if not current_widget:
-            QMessageBox.warning(self, "No PDF", "Open a PDF first.")
+            QMessageBox.warning(self, "No File", "Open a file first.")
             return
 
-        dlg = EditDialog(self)
-        dlg.set_pdf_widget(current_widget)
-        dlg.exec_()
+        # Only allow editing for PDF and spreadsheet types
+        if not isinstance(current_widget, (PDFViewWidget, QTableWidget)):
+            QMessageBox.warning(self, "Unsupported", "Editing is only available for PDF and spreadsheet files.")
+            return
+
+        try:
+            dlg = EditDialog(self)
+            dlg.set_current_widget(current_widget)
+            dlg.exec_()
+        except Exception as e:
+            QMessageBox.warning(self, "Error", f"Could not open edit dialog:\n{str(e)}")
 
     def rotate_all(self, degrees):
         current_widget = self.tab_widget.currentWidget()
@@ -1170,12 +1374,18 @@ class PDFViewerApp(QMainWindow):
     # TOOLBAR ACTIONS
     # ---------------------------------------------------------------------
     def toggle_edit_mode(self):
+        """Toggle edit mode with PDF-only warning."""
         current_widget = self.tab_widget.currentWidget()
         if not current_widget:
-            QMessageBox.warning(self, "No PDF", "Open a PDF first.")
+            QMessageBox.warning(self, "No File", "Open a file first.")
             self.edit_mode_action.setChecked(False)
             return
-
+        
+        if not isinstance(current_widget, PDFViewWidget):
+            QMessageBox.warning(self, "PDF Only", "Text editing is only available for PDF files.")
+            self.edit_mode_action.setChecked(False)
+            return
+        
         if self.edit_mode_action.isChecked():
             current_widget.start_edit_mode()
         else:
@@ -1222,27 +1432,53 @@ class PDFViewerApp(QMainWindow):
         self.update_text_style()
 
     def find_text_dialog(self):
-        """Simple dialog to search text in the current PDF (without highlighting)."""
+        """Enhanced find text dialog that works with all file types."""
         current_widget = self.tab_widget.currentWidget()
-        if not current_widget or not current_widget.doc:
-            QMessageBox.warning(self, "No PDF", "Open a PDF first.")
+        if not current_widget:
+            QMessageBox.warning(self, "No File", "Open a file first.")
             return
 
         text, ok = QInputDialog.getText(self, "Find Text", "Enter text to find:")
-        if ok and text.strip():
-            found_pages = []
-            for page_idx in range(current_widget.doc.page_count):
-                if current_widget.find_text(page_idx, text.strip()):
-                    found_pages.append(str(page_idx + 1))
+        if not ok or not text.strip():
+            return
             
-            if found_pages:
+        found_info = []
+        search_text = text.strip().lower()
+
+        try:
+            # For PDFs
+            if isinstance(current_widget, PDFViewWidget) and hasattr(current_widget, 'doc'):
+                for page_idx in range(current_widget.doc.page_count):
+                    if current_widget.find_text(page_idx, search_text):
+                        found_info.append(f"Page {page_idx + 1}")
+
+            # For Excel/CSV (QTableWidget)
+            elif isinstance(current_widget, QTableWidget):
+                for row in range(current_widget.rowCount()):
+                    for col in range(current_widget.columnCount()):
+                        item = current_widget.item(row, col)
+                        if item and search_text in item.text().lower():
+                            found_info.append(f"Cell {chr(65 + col)}{row + 1}")
+
+            # For Text/JSON (QTextEdit/QTextBrowser)
+            elif isinstance(current_widget, (QTextEdit, QTextBrowser)):
+                cursor = current_widget.document().find(text)
+                while not cursor.isNull():
+                    found_info.append(f"Line {cursor.blockNumber() + 1}")
+                    cursor = current_widget.document().find(text, cursor)
+
+            # Show results
+            if found_info:
                 QMessageBox.information(
-                    self, 
-                    "Found", 
-                    f"Text found on page(s): {', '.join(found_pages)}"
+                    self,
+                    "Found",
+                    f"Text found in:\n{', '.join(found_info)}"
                 )
             else:
                 QMessageBox.information(self, "Not Found", "Text not found in document.")
+
+        except Exception as e:
+            QMessageBox.warning(self, "Search Error", f"Error while searching:\n{str(e)}")
 
 
 

@@ -842,23 +842,59 @@ class PDFViewerApp(QMainWindow):
     def delete_table_columns(self, table, start_col, count):
         """Delete multiple columns from the table."""
         for _ in range(count):
-            table.removeColumn(start_col)
+                table.removeColumn(start_col)
 
     def create_csv_viewer(self, file_path):
-        """Create a CSV viewer widget."""
+        """Create an editable CSV viewer widget with context menu."""
         try:
-            df = pd.read_csv(file_path)
+            # Create table widget
             table = QTableWidget()
+            df = pd.read_csv(file_path)
             table.setRowCount(df.shape[0])
             table.setColumnCount(df.shape[1])
             table.setHorizontalHeaderLabels(df.columns)
 
+            # Make table editable
+            table.setEditTriggers(QTableWidget.DoubleClicked | 
+                                QTableWidget.EditKeyPressed |
+                                QTableWidget.AnyKeyPressed)
+
+            # Enable selection of entire rows/columns
+            table.setSelectionMode(QTableWidget.ExtendedSelection)
+            table.setSelectionBehavior(QTableWidget.SelectRows)
+            
+            # Show row and column headers
+            table.horizontalHeader().setVisible(True)
+            table.verticalHeader().setVisible(True)
+            
+            # Make headers clickable
+            table.horizontalHeader().setSectionsClickable(True)
+            table.verticalHeader().setSectionsClickable(True)
+
+            # Add context menu to headers and cells
+            table.setContextMenuPolicy(Qt.CustomContextMenu)
+            table.horizontalHeader().setContextMenuPolicy(Qt.CustomContextMenu)
+            table.verticalHeader().setContextMenuPolicy(Qt.CustomContextMenu)
+            
+            # Connect context menu signals
+            table.customContextMenuRequested.connect(
+                lambda pos: self.show_table_context_menu(pos, table)
+            )
+            table.horizontalHeader().customContextMenuRequested.connect(
+                lambda pos: self.show_header_context_menu(pos, table, 'column')
+            )
+            table.verticalHeader().customContextMenuRequested.connect(
+                lambda pos: self.show_header_context_menu(pos, table, 'row')
+            )
+
+            # Load data
             for row in range(df.shape[0]):
                 for col in range(df.shape[1]):
                     item = QTableWidgetItem(str(df.iloc[row, col]))
                     table.setItem(row, col, item)
 
             return table
+
         except Exception as e:
             QMessageBox.warning(self, "CSV Error", f"Could not read CSV file:\n{str(e)}")
             return None

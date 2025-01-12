@@ -188,7 +188,13 @@ class PDFViewWidget(QWidget):
         # Add mouse event handling to each page
         for i, pg_widget in enumerate(self.page_widgets):
             pg_widget.page_label.setMouseTracking(True)
-            pg_widget.page_label.mousePressEvent = lambda e, idx=i: self.handle_edit_click(e, idx)
+            pg_widget.page_label.mousePressEvent = lambda e, idx=i: self.handle_mouse_press(e, idx)
+            pg_widget.page_label.mouseMoveEvent = lambda e, idx=i: self.handle_mouse_move(e, idx)
+            pg_widget.page_label.mouseReleaseEvent = lambda e, idx=i: self.handle_mouse_release(e, idx)
+            pg_widget.page_label.setContextMenuPolicy(Qt.CustomContextMenu)
+            pg_widget.page_label.customContextMenuRequested.connect(lambda pos, idx=i: self.show_page_context_menu(pos, idx))
+
+        self.dragging = False
 
     def show_text_edit_menu(self, position):
         """Show context menu for text editing."""
@@ -449,6 +455,38 @@ class PDFViewWidget(QWidget):
         delete_action.triggered.connect(self.delete_current_text)
         menu.exec_(self.current_text_edit.mapToGlobal(position))
 
+    def handle_mouse_press(self, event, page_idx):
+        """Handle mouse press event to start dragging or editing."""
+        if event.button() == Qt.LeftButton:
+            self.dragging = True
+            self.handle_edit_click(event, page_idx)
+
+    def handle_mouse_move(self, event, page_idx):
+        """Handle mouse move event for dragging text."""
+        if self.dragging and self.current_text_edit.isVisible():
+            pos = event.pos()
+            page_widget = self.page_widgets[page_idx]
+            global_pos = page_widget.page_label.mapToGlobal(pos)
+            widget_pos = self.mapFromGlobal(global_pos)
+            self.current_text_edit.move(widget_pos)
+
+    def handle_mouse_release(self, event, page_idx):
+        """Handle mouse release event to stop dragging."""
+        if self.dragging:
+            self.dragging = False
+            pos = event.pos()
+            
+            # Calculate PDF coordinates with proper scaling
+            page = self.doc[page_idx]
+            page_rect = page.rect
+            scale_x = page_rect.width / self.page_widgets[page_idx].page_label.width()
+            scale_y = page_rect.height / self.page_widgets[page_idx].page_label.height()
+            
+            pdf_x = pos.x() * scale_x
+            pdf_y = pos.y() * scale_y
+
+            self.current_text_edit.pdf_position = (pdf_x, pdf_y)
+
     def handle_edit_click(self, event, page_idx):
         """Enhanced click handler for text editing."""
         self.current_page_index = page_idx
@@ -482,40 +520,21 @@ class PDFViewWidget(QWidget):
             self.current_text_edit.setText(clicked_word[4])
             self.current_text_edit.selectAll()
             self.current_text_edit.original_word = clicked_word
+            self.current_text_edit.pdf_position = (clicked_word[0], clicked_word[1])
         else:
             self.current_text_edit.clear()
             self.current_text_edit.original_word = None
+            self.current_text_edit.pdf_position = (pdf_x, pdf_y)
 
         # Set size based on text length or default
         text_width = max(180, len(self.current_text_edit.text()) * 10)
         self.current_text_edit.resize(text_width, 25)
         self.current_text_edit.show()
         self.current_text_edit.setFocus()
-        self.current_text_edit.pdf_position = (pdf_x, pdf_y)
         
         # Create context menu
         self.current_text_edit.setContextMenuPolicy(Qt.CustomContextMenu)
         self.current_text_edit.customContextMenuRequested.connect(self.show_text_edit_menu)
-
-    def delete_current_text(self):
-        """Delete the currently selected text."""
-        if not hasattr(self.current_text_edit, 'original_word') or not self.current_text_edit.original_word:
-            return
-
-        try:
-            page = self.doc[self.current_page_index]
-            word = self.current_text_edit.original_word
-            rect = fitz.Rect(word[0], word[1], word[2], word[3])
-            
-            # Create and apply redaction
-            page.add_redact_annot(rect)
-            page.apply_redactions()
-            
-            self.doc.saveIncr()
-            self.show_page(self.current_page_index)
-            self.current_text_edit.hide()
-        except Exception as e:
-            QMessageBox.warning(self, "Error", f"Could not delete text:\n{str(e)}")
 
     def finish_text_edit(self):
         """Enhanced method to finish text editing."""
@@ -603,6 +622,13 @@ class PDFViewWidget(QWidget):
                 page.delete_annot(annot)
                 self.show_page(page_idx)
             self.temp_highlights = []
+
+    def show_page_context_menu(self, pos, page_idx):
+        """Show context menu for the PDF page."""
+        menu = QMenu()
+        edit_action = menu.addAction("Edit")
+        edit_action.triggered.connect(lambda: self.start_edit_mode())
+        menu.exec_(self.page_widgets[page_idx].page_label.mapToGlobal(pos))
 
 
 ###############################################################################

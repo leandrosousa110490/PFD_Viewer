@@ -60,10 +60,10 @@ class PageWidget(QWidget):
             # Add Edit/Stop Editing toggle
             if not parent.edit_mode:
                 edit_action = menu.addAction("Edit")
-                edit_action.triggered.connect(parent.start_edit_mode)
+                edit_action.triggered.connect(parent.enable_edit_mode)
             else:
                 stop_edit_action = menu.addAction("Stop Editing")
-                stop_edit_action.triggered.connect(parent.stop_edit_mode)
+                stop_edit_action.triggered.connect(parent.disable_edit_mode)
             
             menu.addSeparator()
             close_page_action = menu.addAction("Close This Page")
@@ -445,36 +445,28 @@ class PDFViewWidget(QWidget):
         """Set user's chosen font family, size, color (RGB in 0..1)."""
         self.text_style = style
 
-    def start_edit_mode(self):
-        """Enable editing mode."""
+    def enable_edit_mode(self):
+        """Enable editing mode without showing messages."""
         self.edit_mode = True
         self.text_placement_mode = True
         self.setCursor(Qt.IBeamCursor)
         self.current_text_edit.setEnabled(True)
         
-        # Enable mouse tracking and click handling for all pages
         for i, pg_widget in enumerate(self.page_widgets):
             pg_widget.page_label.setMouseTracking(True)
             pg_widget.page_label.mousePressEvent = lambda e, idx=i: self.handle_edit_click(e, idx)
-        
-        # Show status message
-        QMessageBox.information(self, "Edit Mode", "PDF editing is now enabled.")
 
-    def stop_edit_mode(self):
-        """Disable editing mode."""
+    def disable_edit_mode(self):
+        """Disable editing mode without showing messages."""
         self.edit_mode = False
         self.text_placement_mode = False
         self.setCursor(Qt.ArrowCursor)
         self.current_text_edit.hide()
         self.current_text_edit.setEnabled(False)
         
-        # Disable mouse tracking and click handling
         for pg_widget in self.page_widgets:
             pg_widget.page_label.setMouseTracking(False)
             pg_widget.page_label.mousePressEvent = None
-        
-        # Show status message
-        QMessageBox.information(self, "View Mode", "PDF editing is now disabled.")
 
     def handle_edit_click(self, event, page_idx):
         """Enhanced click handler for text editing."""
@@ -618,17 +610,7 @@ class PDFViewWidget(QWidget):
     def show_page_context_menu(self, pos, page_idx):
         """Show context menu for the PDF page."""
         menu = QMenu()
-        
-        # Only show edit action if not in edit mode
-        if not self.edit_mode:
-            edit_action = menu.addAction("Edit")
-            edit_action.triggered.connect(lambda: self.start_edit_mode())
-        else:
-            stop_edit_action = menu.addAction("Stop Editing")
-            stop_edit_action.triggered.connect(self.stop_edit_mode)
-        
-        if menu.actions():  # Only show menu if it has actions
-            menu.exec_(self.page_widgets[page_idx].page_label.mapToGlobal(pos))
+        menu.exec_(self.page_widgets[page_idx].page_label.mapToGlobal(pos))
 
 
 ###############################################################################
@@ -700,6 +682,14 @@ class PDFViewerApp(QMainWindow):
         toolbar = QToolBar("Main Toolbar")
         self.addToolBar(toolbar)
 
+        # Add PDF Editor button
+        self.edit_pdf_action = QAction("PDF Editor", self)
+        self.edit_pdf_action.setCheckable(True)
+        self.edit_pdf_action.triggered.connect(self.toggle_pdf_edit_mode)
+        toolbar.addAction(self.edit_pdf_action)
+        
+        toolbar.addSeparator()
+
         # Font combo
         self.font_combo = QComboBox()
         # Provide the same keys as our PDFViewWidget.font_map
@@ -721,6 +711,19 @@ class PDFViewerApp(QMainWindow):
         self.color_combo.addItems(["Black", "Red", "Blue", "Green", "Custom..."])
         self.color_combo.currentTextChanged.connect(self.handle_color_selection)
         toolbar.addWidget(self.color_combo)
+
+    def toggle_pdf_edit_mode(self):
+        """Toggle PDF edit mode when the toolbar button is clicked."""
+        current_widget = self.tab_widget.currentWidget()
+        if not isinstance(current_widget, PDFViewWidget):
+            self.edit_pdf_action.setChecked(False)
+            QMessageBox.warning(self, "Warning", "PDF Editor only works with PDF files.")
+            return
+            
+        if self.edit_pdf_action.isChecked():
+            current_widget.enable_edit_mode()
+        else:
+            current_widget.disable_edit_mode()
 
     # ---------------------------------------------------------------------
     # FILE MENU ACTIONS

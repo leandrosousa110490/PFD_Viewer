@@ -49,15 +49,24 @@ class PageWidget(QWidget):
         self.page_label.customContextMenuRequested.connect(self.show_context_menu)
 
     def show_context_menu(self, position):
-        # Right-click context menu for the page
         menu = QMenu(self)
-        close_page_action = menu.addAction("Close This Page")
-
+        
+        # Get parent PDFViewWidget
         parent = self.parent()
         while parent and not isinstance(parent, PDFViewWidget):
             parent = parent.parent()
-
+            
         if parent and isinstance(parent, PDFViewWidget):
+            # Add Edit/Stop Editing toggle
+            if not parent.edit_mode:
+                edit_action = menu.addAction("Edit")
+                edit_action.triggered.connect(parent.start_edit_mode)
+            else:
+                stop_edit_action = menu.addAction("Stop Editing")
+                stop_edit_action.triggered.connect(parent.stop_edit_mode)
+            
+            menu.addSeparator()
+            close_page_action = menu.addAction("Close This Page")
             try:
                 page_index = parent.page_widgets.index(self)
                 close_page_action.triggered.connect(
@@ -193,6 +202,13 @@ class PDFViewWidget(QWidget):
             pg_widget.page_label.customContextMenuRequested.connect(lambda pos, idx=i: self.show_page_context_menu(pos, idx))
 
         self.dragging = False
+
+        # Start in non-edit mode
+        self.edit_mode = False
+        self.text_placement_mode = False
+        
+        # Disable text editing by default
+        self.current_text_edit.setEnabled(False)
 
     def show_text_edit_menu(self, position):
         """Show context menu for text editing."""
@@ -430,31 +446,41 @@ class PDFViewWidget(QWidget):
         self.text_style = style
 
     def start_edit_mode(self):
+        """Enable editing mode."""
         self.edit_mode = True
         self.text_placement_mode = True
         self.setCursor(Qt.IBeamCursor)
-        # Override mousePressEvent on each page
+        self.current_text_edit.setEnabled(True)
+        
+        # Enable mouse tracking and click handling for all pages
         for i, pg_widget in enumerate(self.page_widgets):
             pg_widget.page_label.setMouseTracking(True)
             pg_widget.page_label.mousePressEvent = lambda e, idx=i: self.handle_edit_click(e, idx)
+        
+        # Show status message
+        QMessageBox.information(self, "Edit Mode", "PDF editing is now enabled.")
 
     def stop_edit_mode(self):
+        """Disable editing mode."""
         self.edit_mode = False
         self.text_placement_mode = False
         self.setCursor(Qt.ArrowCursor)
-        # Reset mousePressEvent
+        self.current_text_edit.hide()
+        self.current_text_edit.setEnabled(False)
+        
+        # Disable mouse tracking and click handling
         for pg_widget in self.page_widgets:
+            pg_widget.page_label.setMouseTracking(False)
             pg_widget.page_label.mousePressEvent = None
-
-    def show_text_edit_menu(self, position):
-        """Show context menu for text editing."""
-        menu = QMenu()
-        delete_action = menu.addAction("Delete")
-        delete_action.triggered.connect(self.delete_current_text)
-        menu.exec_(self.current_text_edit.mapToGlobal(position))
+        
+        # Show status message
+        QMessageBox.information(self, "View Mode", "PDF editing is now disabled.")
 
     def handle_edit_click(self, event, page_idx):
         """Enhanced click handler for text editing."""
+        if not self.edit_mode:
+            return  # Ignore clicks if not in edit mode
+            
         self.current_page_index = page_idx
         pos = event.pos()
         
@@ -592,9 +618,17 @@ class PDFViewWidget(QWidget):
     def show_page_context_menu(self, pos, page_idx):
         """Show context menu for the PDF page."""
         menu = QMenu()
-        edit_action = menu.addAction("Edit")
-        edit_action.triggered.connect(lambda: self.start_edit_mode())
-        menu.exec_(self.page_widgets[page_idx].page_label.mapToGlobal(pos))
+        
+        # Only show edit action if not in edit mode
+        if not self.edit_mode:
+            edit_action = menu.addAction("Edit")
+            edit_action.triggered.connect(lambda: self.start_edit_mode())
+        else:
+            stop_edit_action = menu.addAction("Stop Editing")
+            stop_edit_action.triggered.connect(self.stop_edit_mode)
+        
+        if menu.actions():  # Only show menu if it has actions
+            menu.exec_(self.page_widgets[page_idx].page_label.mapToGlobal(pos))
 
 
 ###############################################################################

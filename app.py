@@ -20,7 +20,7 @@ from PyQt5.QtWidgets import (
     QScrollArea, QWidget, QLineEdit, QDialog, QHBoxLayout,
     QSpinBox, QComboBox, QPushButton, QStackedWidget,
     QColorDialog, QTextEdit, QMenu, QMenuBar,
-    QTableWidget, QTableWidgetItem, QTextBrowser
+    QTableWidget, QTableWidgetItem, QTextBrowser, QInputDialog
 )
 from PyQt5.QtGui import (
     QCursor, QFont, QColor, QPixmap, QImage, QTextCursor
@@ -778,12 +778,33 @@ class PDFViewerApp(QMainWindow):
     def create_excel_viewer(self, file_path):
         """Create an editable Excel viewer widget with context menu."""
         try:
-            # Create table directly without container
+            # Create container widget for table and buttons
+            container = QWidget()
+            layout = QVBoxLayout(container)
+
+            # Create button layout
+            button_layout = QHBoxLayout()
+            
+            # Add Row/Column buttons
+            add_row_btn = QPushButton("Add New Row")
+            add_col_btn = QPushButton("Add New Column")
+            
+            button_layout.addWidget(add_row_btn)
+            button_layout.addWidget(add_col_btn)
+            button_layout.addStretch()  # Push buttons to the left
+            
+            layout.addLayout(button_layout)
+
+            # Create table widget
             table = QTableWidget()
             df = pd.read_excel(file_path)
             table.setRowCount(df.shape[0])
             table.setColumnCount(df.shape[1])
             table.setHorizontalHeaderLabels(df.columns)
+
+            # Connect buttons to actions
+            add_row_btn.clicked.connect(lambda: self.add_table_row(table))
+            add_col_btn.clicked.connect(lambda: self.add_table_column(table))
 
             # Make table editable
             table.setEditTriggers(QTableWidget.DoubleClicked | 
@@ -824,7 +845,8 @@ class PDFViewerApp(QMainWindow):
                     item = QTableWidgetItem(str(df.iloc[row, col]))
                     table.setItem(row, col, item)
 
-            return table
+            layout.addWidget(table)
+            return container
             
         except Exception as e:
             QMessageBox.warning(self, "Excel Error", f"Could not read Excel file:\n{str(e)}")
@@ -887,12 +909,33 @@ class PDFViewerApp(QMainWindow):
     def create_csv_viewer(self, file_path):
         """Create an editable CSV viewer widget with context menu."""
         try:
+            # Create container widget for table and buttons
+            container = QWidget()
+            layout = QVBoxLayout(container)
+
+            # Create button layout
+            button_layout = QHBoxLayout()
+            
+            # Add Row/Column buttons
+            add_row_btn = QPushButton("Add New Row")
+            add_col_btn = QPushButton("Add New Column")
+            
+            button_layout.addWidget(add_row_btn)
+            button_layout.addWidget(add_col_btn)
+            button_layout.addStretch()  # Push buttons to the left
+            
+            layout.addLayout(button_layout)
+
             # Create table widget
             table = QTableWidget()
             df = pd.read_csv(file_path)
             table.setRowCount(df.shape[0])
             table.setColumnCount(df.shape[1])
             table.setHorizontalHeaderLabels(df.columns)
+
+            # Connect buttons to actions
+            add_row_btn.clicked.connect(lambda: self.add_table_row(table))
+            add_col_btn.clicked.connect(lambda: self.add_table_column(table))
 
             # Make table editable
             table.setEditTriggers(QTableWidget.DoubleClicked | 
@@ -933,11 +976,45 @@ class PDFViewerApp(QMainWindow):
                     item = QTableWidgetItem(str(df.iloc[row, col]))
                     table.setItem(row, col, item)
 
-            return table
+            layout.addWidget(table)
+            return container
 
         except Exception as e:
             QMessageBox.warning(self, "CSV Error", f"Could not read CSV file:\n{str(e)}")
             return None
+
+    def add_table_row(self, table):
+        """Add a new row to the table."""
+        current_row = table.rowCount()
+        table.insertRow(current_row)
+        
+        # Initialize new row with empty items
+        for col in range(table.columnCount()):
+            table.setItem(current_row, col, QTableWidgetItem(""))
+
+    def add_table_column(self, table):
+        """Add a new column to the table."""
+        current_col = table.columnCount()
+        table.insertColumn(current_col)
+        
+        # Show dialog to get column header
+        header_name, ok = QInputDialog.getText(
+            self, 
+            "New Column", 
+            "Enter column name:",
+            text=f"Column {current_col + 1}"
+        )
+        
+        if ok:
+            # Set column header
+            table.setHorizontalHeaderItem(
+                current_col, 
+                QTableWidgetItem(header_name)
+            )
+            
+            # Initialize column with empty items
+            for row in range(table.rowCount()):
+                table.setItem(row, current_col, QTableWidgetItem(""))
 
     def create_json_viewer(self, file_path):
         """Create an editable JSON viewer that preserves formatting."""
